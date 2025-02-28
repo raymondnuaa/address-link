@@ -1,10 +1,15 @@
 const { ethers } = require('ethers');
 const { getMultiTokenTransferEvents } = require('./blockchain.js');
 const { saveTransferEvent, closeDriver } = require('./neo4j.js');
+const { initializeDatabase, saveTransfer, closeDatabase } = require('./sqlite.js');
+require('dotenv').config();
+
+// Initialize SQLite database
+initializeDatabase();
 
 async function processBlockRange(tokenAddress, fromBlock, toBlock) {
   const provider = new ethers.JsonRpcProvider(
-    `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`
+    process.env.ETHEREUM_RPC_URL || `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`
   );
 
   const CHUNK_SIZE = 100;
@@ -17,9 +22,10 @@ async function processBlockRange(tokenAddress, fromBlock, toBlock) {
     
     try {
       const transfers = await getMultiTokenTransferEvents([tokenAddress], currentFromBlock, currentToBlock, provider);
-      console.log(`Found ${transfers.length} transfers. Saving to Neo4j...`);
+      console.log(`Found ${transfers.length} transfers. Saving to databases...`);
       
       for (const transfer of transfers) {
+        // Save to Neo4j
         await saveTransferEvent(
           transfer.txHash,
           transfer.fromAddress,
@@ -27,6 +33,23 @@ async function processBlockRange(tokenAddress, fromBlock, toBlock) {
           transfer.amount,
           transfer.tokenAddress
         );
+        
+        // Save to SQLite
+        await saveTransfer({
+          transactionHash: transfer.txHash,
+          blockNumber: transfer.blockNumber,
+          from: transfer.fromAddress,
+          to: transfer.toAddress,
+          value: transfer.amount,
+          tokenAddress: transfer.tokenAddress,
+          token: {
+            address: transfer.tokenAddress,
+            // These could be populated from a token metadata service if needed
+            name: '',
+            symbol: '',
+            decimals: 0
+          }
+        });
       }
       
       console.log(`Completed processing blocks ${currentFromBlock} to ${currentToBlock}`);
@@ -37,7 +60,9 @@ async function processBlockRange(tokenAddress, fromBlock, toBlock) {
     currentFromBlock = currentToBlock + 1;
   }
 
+  // Close database connections
   await closeDriver();
+  closeDatabase();
 }
 
 async function main() {
